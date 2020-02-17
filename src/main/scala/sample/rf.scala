@@ -60,21 +60,6 @@ object rf {
     val rfModel = model.stages(1).asInstanceOf[RandomForestRegressionModel]
     println(s"Learned regression forest model:\n ${rfModel.toDebugString}")
 
-//    val modelPipeline = SparkUtil.createPipelineModel(uid = "pipeline",
-//      Array(featureIndexer, rfModel))
-
-    //    // Model persistence using MLeap start
-    //    val sbc = SparkBundleContext().withDataset(predictions)
-    //
-    //    // Have a look here
-    //    // https://docs.databricks.com/_static/notebooks/mleap-model-export-demo-scala.html
-    //    // figure out the best method for model persistence
-    //    // TODO: change location of this file, make it relative
-    //    for(bundle <- managed(BundleFile("jar:file:/tmp/mleap-models/rf-exp-1.zip" ))) {
-    //      modelPipeline.writeBundle.save(bundle)(sbc)
-    //    }
-    //    // Model persistence using MLeap start
-
     model.write.overwrite().save("/tmp/mleal-models/rf-exp-2")
   }
 }
