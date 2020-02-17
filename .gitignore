@@ -108,3 +108,7 @@ models/
 spark-warehouse/
 src/test/
 target/generated-sources/
+target/*
+.DS_Store
+
+dependency-reduced-pom.xml
