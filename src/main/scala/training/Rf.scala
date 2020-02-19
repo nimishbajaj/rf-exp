@@ -37,7 +37,7 @@ object Rf {
     log.info(s"source_uri $source_uri")
     log.error(s"train_split $train_split")
 
-    // TODO: Figure out the data preprocessing bit for the random forest model
+    // TODO: Configure a vectoriser for table like dataframes to be used by the random forest model
     // TODO: Enable picking up model from a location stuff
     // Load and parse the data file, converting it to a DataFrame.
     // TODO: Enable exception handling here
