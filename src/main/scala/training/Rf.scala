@@ -1,16 +1,27 @@
 package training
 
-import java.util.Properties
+import java.io.{File, FileWriter, IOException}
+import java.util.{Calendar, Properties}
 
+import com.google.gson.Gson
 import org.apache.log4j.Logger
 import org.apache.spark.ml.evaluation.RegressionEvaluator
 import org.apache.spark.ml.feature.{VectorAssembler, VectorIndexer, VectorIndexerModel}
+import org.apache.spark.ml.linalg.SparseVector
+import org.apache.spark.ml.param.shared.HasFeaturesCol
 import org.apache.spark.ml.regression.{RandomForestRegressionModel, RandomForestRegressor}
 import org.apache.spark.ml.{Pipeline, PipelineModel}
 import org.apache.spark.sql.{DataFrame, Dataset, Row, SparkSession}
+import org.codehaus.jackson.map.ObjectMapper
+
+import scala.util.parsing.json.JSONObject
 
 object Rf {
   @transient lazy val log: Logger = Logger.getLogger(getClass.getName)
+
+  // Default model name is the algorithm name + timestamp at which it was created
+  val model_name: String = "RF-" + Calendar.getInstance.getTimeInMillis
+  val model_location: String = "models/" + model_name
 
   def main(arg: Array[String]): Unit = {
 
@@ -35,6 +46,11 @@ object Rf {
     log.info(s"source_uri $source_uri")
     log.error(s"train_split $train_split")
 
+    // Setup the working directory for the model
+    log.error(s"Creating model working directory at $model_location")
+    val file = new File(model_location)
+    file.mkdirs()
+    log.error(s"Model directory created")
 
     // TODO: P2 Enable picking up model from a location stuff
     // TODO: P1 Enable exception handling while reading data
@@ -60,11 +76,10 @@ object Rf {
     log.error(s"Train test splits generated $train_split")
 
 
-    val model = trainModel(trainingData, label_column, featureIndexer)
+    val model = trainModel(trainingData, label_column, featureIndexer, feature_cols)
     scoreModel(model, testData, label_column)
 
-    val model_location = "/tmp/mleal-models/rf-exp-2"
-    model.write.overwrite().save(model_location)
+    model.write.overwrite().save(model_location + "/model")
     log.error(s"Model successfully saved in the location $model_location")
   }
 
@@ -82,6 +97,8 @@ object Rf {
     log.error(data.printSchema())
     log.error(s"Data has been successfully read from $source_uri")
     log.error(s"Number of rows in the dataset ${data.count}")
+    log.error(s"Number of columns in the dataset ${data.columns.length}")
+
     data
   }
 
@@ -112,7 +129,7 @@ object Rf {
 
 
   def trainModel(trainingData: Dataset[Row], label_column: String,
-                 featureIndexer: VectorIndexerModel): PipelineModel = {
+                 featureIndexer: VectorIndexerModel, featuresCol: Array[String]): PipelineModel = {
     // Train a RandomForest model.
     val rf = new RandomForestRegressor()
       .setLabelCol(label_column)
@@ -129,7 +146,32 @@ object Rf {
     log.error("model training finished")
 
     val rfModel = model.stages(1).asInstanceOf[RandomForestRegressionModel]
-    log.error(s"Learned regression forest model:\n ${rfModel.toDebugString}")
+    // log.error(s"Learned regression forest model:\n ${rfModel.toDebugString}")
+
+    /**
+     * Generate feature importance chart
+     * 1. Find feature importance
+     * 2. Fetch the top 10 features from it
+     * 3. Convert the feature importance into a json and store
+     * 4. Try plotting a radar chart using these feature importance values
+      */
+
+    // 1
+    val featureImportance = {featuresCol zip rfModel.featureImportances.asInstanceOf[SparseVector].values}.toMap
+    log.error(s"Feature importance is $featureImportance")
+
+    // 2
+    val jo = new JSONObject(featureImportance).toString()
+    val fileWriter = new FileWriter(model_location + "/featureImportance.json")
+    try {
+      fileWriter.write(jo)
+      log.error("Successfully saved the feature importance json")
+    } catch {
+      case e: IOException => log.error(e)
+    } finally {
+      fileWriter.close()
+      log.error("File closed")
+    }
 
     model
   }
