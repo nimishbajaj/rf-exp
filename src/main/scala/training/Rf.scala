@@ -8,25 +8,23 @@ import org.apache.spark.ml.feature.{VectorAssembler, VectorIndexer, VectorIndexe
 import org.apache.spark.ml.regression.{RandomForestRegressionModel, RandomForestRegressor}
 import org.apache.spark.ml.{Pipeline, PipelineModel}
 import org.apache.spark.sql.{DataFrame, Dataset, Row, SparkSession}
-import training.Holder._
 
 object Rf {
+  @transient lazy val log: Logger = Logger.getLogger(getClass.getName)
 
   def main(arg: Array[String]): Unit = {
 
     // Fetch properties
     val properties = new Properties
     properties.load(getClass.getResourceAsStream("/config.properties"))
-    val application_name = properties.get("application.name")
-
-    @transient lazy val log = Logger.getLogger(getClass.getName)
+    val application_name: String = properties.get("application.name") + ""
 
     log.error(s"Application name is $application_name")
 
     val spark: SparkSession = SparkSession
       .builder
       .master("local")
-      .appName(application_name.toString)
+      .appName(application_name)
       .getOrCreate()
 
     // Config variables
@@ -39,7 +37,7 @@ object Rf {
 
 
     // TODO: P2 Enable picking up model from a location stuff
-    // TODO: P1 Enable exception handling here
+    // TODO: P1 Enable exception handling while reading data
     // TODO: P2 Test with Hive connection
 
     val data = readDataCsv(source_uri, spark)
@@ -90,14 +88,15 @@ object Rf {
 
   def listFeatures(data: DataFrame, label_column: String): Array[String] = {
     // Fetch all column names
+    log.error("The control reaches here")
     val feature_cols = data
       .columns
       .toList
-      .filterNot(x => x == label_column)
+      .filter(x => x != label_column)
       .toArray
 
     log.error(s"Label column $label_column")
-    log.error(s"Feature columns ${feature_cols.toString}")
+    log.error("Feature columns \n " + feature_cols)
 
     feature_cols
   }
@@ -146,6 +145,10 @@ object Rf {
     log.error(predictions.select("prediction", label_column, "features").show(5))
 
     // TODO: P1 Add proper logging
+    // TODO: P1 Add a model interpretation utility, use LIME or similar packages for this
+    // TODO: P1 Generate graphs and store the data as json files
+    // TODO: P3 Spark job as service
+    // TODO: P2 Test cases
     // Select (prediction, true label) and compute test error.
     val evaluator = new RegressionEvaluator()
       .setLabelCol(label_column)
