@@ -3,28 +3,34 @@ package training
 import java.io.{File, FileWriter, IOException}
 import java.util.{Calendar, Properties}
 
-import com.google.gson.Gson
 import org.apache.log4j.Logger
 import org.apache.spark.ml.evaluation.RegressionEvaluator
 import org.apache.spark.ml.feature.{VectorAssembler, VectorIndexer, VectorIndexerModel}
 import org.apache.spark.ml.linalg.SparseVector
-import org.apache.spark.ml.param.shared.HasFeaturesCol
 import org.apache.spark.ml.regression.{RandomForestRegressionModel, RandomForestRegressor}
 import org.apache.spark.ml.{Pipeline, PipelineModel}
 import org.apache.spark.sql.{DataFrame, Dataset, Row, SparkSession}
-import org.codehaus.jackson.map.ObjectMapper
 
+import scala.collection.immutable.ListMap
 import scala.util.parsing.json.JSONObject
 
 object Rf {
   @transient lazy val log: Logger = Logger.getLogger(getClass.getName)
 
-  // Default model name is the algorithm name + timestamp at which it was created
+  // All variables initialized with default configuration
   val model_name: String = "RF-" + Calendar.getInstance.getTimeInMillis
   val model_location: String = "models/" + model_name
+  val n_key_features: Int = 15
+  val source_uri = "data/credit.csv"
+  val label_column = "age"
+  val train_split = 0.7
+  val rf_max_depth = 5
+  val rf_num_tree = 20
+  val universal_seed = 3
 
   def main(arg: Array[String]): Unit = {
 
+    // TODO: Parameterise the code
     // Fetch properties
     val properties = new Properties
     properties.load(getClass.getResourceAsStream("/config.properties"))
@@ -38,11 +44,6 @@ object Rf {
       .appName(application_name)
       .getOrCreate()
 
-    // Config variables
-    val source_uri = "data/credit.csv"
-    val label_column = "age"
-    val train_split = 0.7
-
     log.info(s"source_uri $source_uri")
     log.error(s"train_split $train_split")
 
@@ -52,8 +53,8 @@ object Rf {
     file.mkdirs()
     log.error(s"Model directory created")
 
-    // TODO: P2 Enable picking up model from a location stuff
-    // TODO: P1 Enable exception handling while reading data
+    // TODO: P2 Enable picking up model from a location
+    // TODO: P2 Enable exception handling while reading data
     // TODO: P2 Test with Hive connection
 
     val data = readDataCsv(source_uri, spark)
@@ -72,12 +73,12 @@ object Rf {
       .fit(pdata)
 
     // Split the data into training and test sets (30% held out for testing).
-    val Array(trainingData, testData) = pdata.randomSplit(Array(train_split, 1.0 - train_split))
+    val Array(trainingData, testData) = pdata.randomSplit(Array(train_split, 1.0 - train_split), seed = universal_seed)
     log.error(s"Train test splits generated $train_split")
 
 
-    val model = trainModel(trainingData, label_column, featureIndexer, feature_cols)
-    scoreModel(model, testData, label_column)
+    val model = trainModel(trainingData, featureIndexer, feature_cols)
+    scoreModel(model, testData)
 
     model.write.overwrite().save(model_location + "/model")
     log.error(s"Model successfully saved in the location $model_location")
@@ -128,12 +129,17 @@ object Rf {
   }
 
 
-  def trainModel(trainingData: Dataset[Row], label_column: String,
-                 featureIndexer: VectorIndexerModel, featuresCol: Array[String]): PipelineModel = {
+  def trainModel(trainingData: Dataset[Row], featureIndexer: VectorIndexerModel,
+                 featuresCol: Array[String]): PipelineModel = {
+    // TODO: Parameterise Random Forest model code
     // Train a RandomForest model.
     val rf = new RandomForestRegressor()
       .setLabelCol(label_column)
       .setFeaturesCol("indexedFeatures")
+      .setMaxDepth(rf_max_depth)
+      .setNumTrees(rf_num_tree)
+      .setSeed(universal_seed)
+
 
     // Chain indexer and forest in a Pipeline.
     val pipeline = new Pipeline()
@@ -151,17 +157,23 @@ object Rf {
     /**
      * Generate feature importance chart
      * 1. Find feature importance
-     * 2. Fetch the top 10 features from it
+     * 2. Fetch the top 15 features from it
      * 3. Convert the feature importance into a json and store
      * 4. Try plotting a radar chart using these feature importance values
-      */
+     */
 
     // 1
-    val featureImportance = {featuresCol zip rfModel.featureImportances.asInstanceOf[SparseVector].values}.toMap
-    log.error(s"Feature importance is $featureImportance")
+    val featureImportance = {
+      featuresCol zip rfModel.featureImportances.asInstanceOf[SparseVector].values
+    }.toMap
+
+    // sort the map values and take at max top 15 features
+    val sortedFeatureImportance = ListMap(featureImportance.toSeq.sortBy(_._2).reverse: _*).take(5)
+
+    log.error(s"Feature importance is $sortedFeatureImportance")
 
     // 2
-    val jo = new JSONObject(featureImportance).toString()
+    val jo = new JSONObject(sortedFeatureImportance).toString()
     val fileWriter = new FileWriter(model_location + "/featureImportance.json")
     try {
       fileWriter.write(jo)
@@ -177,18 +189,16 @@ object Rf {
   }
 
 
-  def scoreModel(model: PipelineModel, testData: Dataset[Row], label_column: String): Unit = {
+  def scoreModel(model: PipelineModel, testData: Dataset[Row]): Unit = {
     // Make predictions.
     log.error("scoring the model against test data")
     val predictions = model.transform(testData)
     log.error("scoring fininshed")
 
     // Select example rows to display.
-    log.error(predictions.select("prediction", label_column, "features").show(5))
+    log.error(predictions.select("prediction", label_column, "features").show(n_key_features))
 
     // TODO: P1 Add proper logging
-    // TODO: P1 Add a model interpretation utility, use LIME or similar packages for this
-    // TODO: P1 Generate graphs and store the data as json files
     // TODO: P3 Spark job as service
     // TODO: P2 Test cases
     // Select (prediction, true label) and compute test error.
@@ -199,4 +209,5 @@ object Rf {
     val rmse = evaluator.evaluate(predictions)
     log.error(s"Root Mean Squared Error (RMSE) on test data = $rmse")
   }
+
 }
