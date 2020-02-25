@@ -1,6 +1,8 @@
 package training
 
 import java.io.{File, FileWriter, IOException}
+import java.nio.file.attribute.PosixFilePermissions
+import java.nio.file.{Files, Paths}
 import java.util.{Calendar, Properties}
 
 import org.apache.log4j.Logger
@@ -14,24 +16,51 @@ import org.apache.spark.sql.{DataFrame, Dataset, Row, SparkSession}
 import scala.collection.immutable.ListMap
 import scala.util.parsing.json.JSONObject
 
+import Utilities._
+
 object Rf {
   @transient lazy val log: Logger = Logger.getLogger(getClass.getName)
 
   // All variables initialized with default configuration
-  val model_name: String = "RF-" + Calendar.getInstance.getTimeInMillis
-  val model_location: String = "models/" + model_name
+  val experiment_name: String = "churn_prediction"
+  val model_name: String = "RF"
+  val version_name: String = "1.0"
+  val output_location = "/tmp/quaero/experiments"
+  val model_location: String = output_location + "/" +
+    experiment_name + "/" +
+    model_name + "/" +
+    version_name + "/"
   val n_key_features: Int = 15
   val source_uri = "data/credit.csv"
-  val label_column = "age"
-  val train_split = 0.7
+  val target_variable = "age"
+  val train_split = 0.7 // TODO: P3 Look at time series data split
   val rf_max_depth = 5
   val rf_num_tree = 20
   val universal_seed = 3
 
+  // TODO: set status to finished after model training in mysql also set the time of update
+  // TODO: enable unique application id, so that the job can be stopped
+  // TODO: Add chart name in the JSON
+  // TODO: Figure out the trigger for the training job in backend
+  // TODO: Figure out the trigger for the deployment in backend
+
+  def printDefaults(): Unit = {
+    val vars = getClass.getDeclaredFields
+    log.error("Printing default values")
+    for(v <- vars) {
+      v.setAccessible(true)
+      log.error(s"${v.getName}: ${v.get(this)}")
+    }
+  }
+
+
   def main(arg: Array[String]): Unit = {
 
-    // TODO: Parameterise the code
+    // TODO: Parameterize the code
     // Fetch properties
+    printDefaults()
+
+    // TODO: Remove dependency on config properties
     val properties = new Properties
     properties.load(getClass.getResourceAsStream("/config.properties"))
     val application_name: String = properties.get("application.name") + ""
@@ -49,17 +78,16 @@ object Rf {
 
     // Setup the working directory for the model
     log.error(s"Creating model working directory at $model_location")
-    val file = new File(model_location)
-    file.mkdirs()
-    log.error(s"Model directory created")
 
-    // TODO: P2 Enable picking up model from a location
-    // TODO: P2 Enable exception handling while reading data
-    // TODO: P2 Test with Hive connection
+    // TODO: Handle exception here - The code below will throw an exception if the directory cannot be created
+    Files.createDirectories(Paths.get(model_location),
+      PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwxr-x---")))
+
+    log.error(s"Model directory created")
 
     val data = readDataCsv(source_uri, spark)
 
-    val feature_cols = listFeatures(data, label_column)
+    val feature_cols = listFeatures(data, target_variable)
 
     // Combine features into a feature vector
     val pdata = dataAssember(data, feature_cols)
@@ -76,7 +104,6 @@ object Rf {
     val Array(trainingData, testData) = pdata.randomSplit(Array(train_split, 1.0 - train_split), seed = universal_seed)
     log.error(s"Train test splits generated $train_split")
 
-
     val model = trainModel(trainingData, featureIndexer, feature_cols)
     scoreModel(model, testData)
 
@@ -85,61 +112,15 @@ object Rf {
   }
 
 
-  def readDataCsv(source_uri: String, spark: SparkSession): DataFrame = {
-    // Load and parse the data file, converting it to a DataFrame.
-    val data = spark.read.format("csv")
-      .option("header", value = true)
-      .option("delimiter", ",")
-      .option("mode", "DROPMALFORMED")
-      .option("inferSchema", "true")
-      .load(source_uri)
-      .cache()
-
-    log.error(data.printSchema())
-    log.error(s"Data has been successfully read from $source_uri")
-    log.error(s"Number of rows in the dataset ${data.count}")
-    log.error(s"Number of columns in the dataset ${data.columns.length}")
-
-    data
-  }
-
-
-  def listFeatures(data: DataFrame, label_column: String): Array[String] = {
-    // Fetch all column names
-    log.error("The control reaches here")
-    val feature_cols = data
-      .columns
-      .toList
-      .filter(x => x != label_column)
-      .toArray
-
-    log.error(s"Label column $label_column")
-    log.error("Feature columns \n " + feature_cols)
-
-    feature_cols
-  }
-
-
-  def dataAssember(data: DataFrame, feature_cols: Array[String]): DataFrame = {
-    val assembler = new VectorAssembler()
-      .setInputCols(feature_cols)
-      .setOutputCol("features")
-
-    assembler.transform(data)
-  }
-
-
   def trainModel(trainingData: Dataset[Row], featureIndexer: VectorIndexerModel,
                  featuresCol: Array[String]): PipelineModel = {
-    // TODO: Parameterise Random Forest model code
     // Train a RandomForest model.
     val rf = new RandomForestRegressor()
-      .setLabelCol(label_column)
+      .setLabelCol(target_variable)
       .setFeaturesCol("indexedFeatures")
       .setMaxDepth(rf_max_depth)
       .setNumTrees(rf_num_tree)
       .setSeed(universal_seed)
-
 
     // Chain indexer and forest in a Pipeline.
     val pipeline = new Pipeline()
@@ -159,7 +140,6 @@ object Rf {
      * 1. Find feature importance
      * 2. Fetch the top 15 features from it
      * 3. Convert the feature importance into a json and store
-     * 4. Try plotting a radar chart using these feature importance values
      */
 
     // 1
@@ -167,12 +147,13 @@ object Rf {
       featuresCol zip rfModel.featureImportances.asInstanceOf[SparseVector].values
     }.toMap
 
+    // 2
     // sort the map values and take at max top 15 features
-    val sortedFeatureImportance = ListMap(featureImportance.toSeq.sortBy(_._2).reverse: _*).take(5)
+    val sortedFeatureImportance = ListMap(featureImportance.toSeq.sortBy(_._2).reverse: _*).take(n_key_features)
 
     log.error(s"Feature importance is $sortedFeatureImportance")
 
-    // 2
+    // 3
     val jo = new JSONObject(sortedFeatureImportance).toString()
     val fileWriter = new FileWriter(model_location + "/featureImportance.json")
     try {
@@ -189,25 +170,6 @@ object Rf {
   }
 
 
-  def scoreModel(model: PipelineModel, testData: Dataset[Row]): Unit = {
-    // Make predictions.
-    log.error("scoring the model against test data")
-    val predictions = model.transform(testData)
-    log.error("scoring fininshed")
 
-    // Select example rows to display.
-    log.error(predictions.select("prediction", label_column, "features").show(n_key_features))
-
-    // TODO: P1 Add proper logging
-    // TODO: P3 Spark job as service
-    // TODO: P2 Test cases
-    // Select (prediction, true label) and compute test error.
-    val evaluator = new RegressionEvaluator()
-      .setLabelCol(label_column)
-      .setPredictionCol("prediction")
-      .setMetricName("rmse")
-    val rmse = evaluator.evaluate(predictions)
-    log.error(s"Root Mean Squared Error (RMSE) on test data = $rmse")
-  }
 
 }
